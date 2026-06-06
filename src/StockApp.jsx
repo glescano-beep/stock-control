@@ -354,9 +354,7 @@ export default function StockApp() {
         setEditProduct(null);
         setForm({ name: "", barcode: cleanCode, category: "Otro", description: "", stock: 0, min_stock: 5, price: 0 });
         setTimeout(() => setModalType("product"), 300);
-      } else {
-        showToast(`Código ${cleanCode} no encontrado`, "err");
-      }
+      else { showToast(`Leído: ${cleanCode}`, "err");
     }
   };
 
