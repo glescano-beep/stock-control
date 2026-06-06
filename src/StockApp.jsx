@@ -62,56 +62,118 @@ function formatDate(iso) {
   return new Date(iso).toLocaleDateString("es-AR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
-// ─── ZXING BARCODE SCANNER (funciona en iPhone Safari y Android Chrome) ──────
+// ─── BARCODE SCANNER con Quagga2 ─────────────────────────────────────────────
 function BarcodeScanner({ onDetected }) {
-  const videoRef = useRef(null);
+  const scannerRef = useRef(null);
   const [error, setError] = useState(null);
-  const [scanning, setScanning] = useState(false);
+  const [starting, setStarting] = useState(true);
   const [manual, setManual] = useState("");
-  const readerRef = useRef(null);
+  const detectedRef = useRef(false);
 
   useEffect(() => {
-    let codeReader;
+    let Quagga;
     async function start() {
       try {
-        const ZXing = await import("@zxing/library");
-        codeReader = new ZXing.BrowserMultiFormatReader();
-        readerRef.current = codeReader;
-        const devices = await ZXing.BrowserMultiFormatReader.listVideoInputDevices();
-        if (!devices || devices.length === 0) { setError("No se encontró cámara. Usá el campo manual."); return; }
-        // Preferir cámara trasera
-        const back = devices.find(d => /back|rear|environment/i.test(d.label)) || devices[devices.length - 1];
-        setScanning(true);
-        await codeReader.decodeFromVideoDevice(back.deviceId, videoRef.current, (result, err) => {
-          if (result) { onDetected(result.getText()); }
+        const mod = await import("@ericblade/quagga2");
+        Quagga = mod.default;
+
+        await new Promise((resolve, reject) => {
+          Quagga.init({
+            inputStream: {
+              type: "LiveStream",
+              target: scannerRef.current,
+              constraints: {
+                facingMode: "environment",
+                width: { ideal: 1280 },
+                height: { ideal: 720 },
+              },
+            },
+            decoder: {
+              readers: ["ean_reader", "ean_8_reader", "code_128_reader", "code_39_reader", "upc_reader", "upc_e_reader"],
+            },
+            locate: true,
+          }, (err) => {
+            if (err) { reject(err); return; }
+            resolve();
+          });
+        });
+
+        Quagga.start();
+        setStarting(false);
+
+        Quagga.onDetected((result) => {
+          if (detectedRef.current) return;
+          const code = result?.codeResult?.code;
+          if (code) {
+            detectedRef.current = true;
+            // Vibrar si el dispositivo lo soporta
+            if (navigator.vibrate) navigator.vibrate(100);
+            onDetected(code);
+          }
         });
       } catch (e) {
         setError("No se pudo acceder a la cámara. Usá el campo manual.");
+        setStarting(false);
       }
     }
+
     start();
-    return () => { try { readerRef.current?.reset(); } catch {} };
+
+    return () => {
+      try { if (Quagga) { Quagga.stop(); Quagga.offDetected(); } } catch {}
+    };
   }, []);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       <div style={{ position: "relative", borderRadius: 12, overflow: "hidden", background: "#0a0c12", aspectRatio: "4/3" }}>
-        <video ref={videoRef} style={{ width: "100%", height: "100%", objectFit: "cover" }} playsInline muted />
-        {scanning && (
+        {/* Quagga renderiza el video acá */}
+        <div ref={scannerRef} style={{ width: "100%", height: "100%" }} />
+
+        {/* Overlay de apuntado */}
+        {!error && !starting && (
           <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
-            <div style={{ width: "75%", height: "28%", border: "2px solid #5b8def", borderRadius: 8, boxShadow: "0 0 0 9999px rgba(0,0,0,0.5)" }} />
+            <div style={{ width: "80%", height: "25%", border: "2px solid #5b8def", borderRadius: 8, boxShadow: "0 0 0 9999px rgba(0,0,0,0.4)" }} />
           </div>
         )}
-        {error && <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, textAlign: "center", fontSize: 13, color: "#f0904a", background: "#0a0c12" }}>{error}</div>}
-        {!scanning && !error && <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", color: "#8b90a8", fontSize: 13 }}>Iniciando cámara...</div>}
+
+        {starting && !error && (
+          <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, background: "#0a0c12" }}>
+            <div style={{ width: 32, height: 32, border: "3px solid #1e2130", borderTop: "3px solid #5b8def", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
+            <div style={{ color: "#8b90a8", fontSize: 13 }}>Iniciando cámara...</div>
+          </div>
+        )}
+
+        {error && (
+          <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, textAlign: "center", fontSize: 13, color: "#f0904a", background: "#0a0c12" }}>
+            📷 {error}
+          </div>
+        )}
+
+        {/* Texto de ayuda */}
+        {!error && !starting && (
+          <div style={{ position: "absolute", bottom: 10, left: 0, right: 0, textAlign: "center", fontSize: 11, color: "rgba(255,255,255,0.6)" }}>
+            Apuntá el código de barras al recuadro azul
+          </div>
+        )}
       </div>
+
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+
       <div>
-        <label style={{ fontSize: 12, color: "#8b90a8", fontWeight: 500, display: "block", marginBottom: 6 }}>O ingresá el código manualmente:</label>
+        <label style={{ fontSize: 12, color: "#8b90a8", fontWeight: 500, display: "block", marginBottom: 6 }}>
+          O ingresá el código manualmente:
+        </label>
         <div style={{ display: "flex", gap: 8 }}>
-          <input style={{ flex: 1, background: "#1e2130", border: "1px solid #252839", borderRadius: 9, padding: "10px 14px", color: "#e8eaf0", fontSize: 15, fontFamily: "monospace", outline: "none" }}
-            placeholder="Ej: 7891234560001" value={manual} onChange={e => setManual(e.target.value)}
-            onKeyDown={e => e.key === "Enter" && manual.trim() && onDetected(manual.trim())} />
-          <button onClick={() => manual.trim() && onDetected(manual.trim())}
+          <input
+            style={{ flex: 1, background: "#1e2130", border: "1px solid #252839", borderRadius: 9, padding: "10px 14px", color: "#e8eaf0", fontSize: 15, fontFamily: "monospace", outline: "none" }}
+            placeholder="Ej: 7891234560001"
+            value={manual}
+            onChange={e => setManual(e.target.value)}
+            onKeyDown={e => e.key === "Enter" && manual.trim() && onDetected(manual.trim())}
+          />
+          <button
+            onClick={() => manual.trim() && onDetected(manual.trim())}
             style={{ background: "#5b8def", color: "#fff", border: "none", borderRadius: 9, padding: "10px 18px", fontWeight: 600, fontSize: 14, cursor: "pointer" }}>
             Buscar
           </button>
@@ -276,7 +338,6 @@ export default function StockApp() {
     setCreatingUser(true);
     try {
       const newUser = await adminCreateUser(newUserEmail, newUserPass);
-      // Set role in profiles
       await sb(`profiles?id=eq.${newUser.id}`, { method: "PATCH", body: JSON.stringify({ role: newUserRole }) }, token);
       showToast("Usuario creado ✓");
       setNewUserEmail(""); setNewUserPass(""); setNewUserRole("operador");
@@ -317,7 +378,6 @@ export default function StockApp() {
 
   return (
     <div style={S.page}>
-      {/* Header */}
       <div style={S.header}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <div style={{ width: 28, height: 28, background: "#5b8def", borderRadius: 7, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15 }}>📦</div>
@@ -336,7 +396,6 @@ export default function StockApp() {
 
       <div style={{ padding: "18px 14px 90px", maxWidth: 1000, margin: "0 auto" }}>
 
-        {/* DASHBOARD */}
         {view === "dashboard" && (
           <div>
             <h2 style={{ fontSize: 19, fontWeight: 700, marginBottom: 18 }}>Dashboard</h2>
@@ -388,7 +447,6 @@ export default function StockApp() {
           </div>
         )}
 
-        {/* PRODUCTS */}
         {view === "products" && (
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
@@ -429,7 +487,6 @@ export default function StockApp() {
           </div>
         )}
 
-        {/* MOVEMENTS */}
         {view === "movements" && (
           <div>
             <h2 style={{ fontSize: 19, fontWeight: 700, marginBottom: 14 }}>Historial</h2>
@@ -452,12 +509,9 @@ export default function StockApp() {
           </div>
         )}
 
-        {/* USERS (Admin only) */}
         {view === "users" && isAdmin && (
           <div>
             <h2 style={{ fontSize: 19, fontWeight: 700, marginBottom: 18 }}>Gestión de usuarios</h2>
-
-            {/* Create user */}
             <div style={{ ...S.card, marginBottom: 20, padding: 20 }}>
               <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 16, color: "#5b8def" }}>➕ Crear nuevo usuario</div>
               <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -484,26 +538,20 @@ export default function StockApp() {
                 </button>
               </div>
             </div>
-
-            {/* User list */}
             <div style={S.card}>
-              <div style={{ fontSize: 13, fontWeight: 600, padding: "12px 16px", borderBottom: "1px solid #1e2130" }}>👥 Usuarios registrados ({users.length})</div>
-              {users.length === 0 && <div style={{ padding: 24, textAlign: "center", color: "#8b90a8", fontSize: 13 }}>Sin usuarios</div>}
+              <div style={{ fontSize: 13, fontWeight: 600, padding: "12px 16px", borderBottom: "1px solid #1e2130" }}>👥 Usuarios ({users.length})</div>
               {users.map(u => (
                 <div key={u.id} style={{ ...S.row, justifyContent: "space-between" }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{u.email}</div>
-                    <div style={{ fontSize: 11, color: "#8b90a8", marginTop: 2 }}>Creado: {formatDate(u.created_at)}</div>
+                    <div style={{ fontSize: 11, color: "#8b90a8", marginTop: 2 }}>{formatDate(u.created_at)}</div>
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
                     <span style={{ fontSize: 11, fontWeight: 700, padding: "3px 9px", borderRadius: 20, background: u.role === "admin" ? "#1e2f50" : "#1a2f23", color: u.role === "admin" ? "#5b8def" : "#4ade80" }}>
                       {u.role === "admin" ? "👑 Admin" : "👤 Operador"}
                     </span>
                     {u.id !== auth.session.user.id && (
-                      <button style={S.btnGhost} onClick={() => changeUserRole(u.id, u.role === "admin" ? "operador" : "admin")}
-                        title={u.role === "admin" ? "Cambiar a Operador" : "Cambiar a Admin"}>
-                        🔄
-                      </button>
+                      <button style={S.btnGhost} onClick={() => changeUserRole(u.id, u.role === "admin" ? "operador" : "admin")}>🔄</button>
                     )}
                   </div>
                 </div>
@@ -513,7 +561,6 @@ export default function StockApp() {
         )}
       </div>
 
-      {/* Bottom tab bar */}
       <div style={S.tabBar}>
         {tabs.map(([v, icon, label]) => (
           <button key={v} onClick={() => setView(v)} style={{ flex: 1, background: "none", border: "none", cursor: "pointer", padding: "10px 4px 8px", display: "flex", flexDirection: "column", alignItems: "center", gap: 3, color: view === v ? "#5b8def" : "#8b90a8", fontSize: 10, fontWeight: 500 }}>
@@ -525,7 +572,6 @@ export default function StockApp() {
         </button>
       </div>
 
-      {/* MODAL Scanner */}
       {modalType === "scanner" && (
         <div style={S.modalOverlay} onClick={e => e.target === e.currentTarget && setModalType(null)}>
           <div style={S.modal}>
@@ -538,7 +584,6 @@ export default function StockApp() {
         </div>
       )}
 
-      {/* MODAL Product */}
       {modalType === "product" && isAdmin && (
         <div style={S.modalOverlay} onClick={e => e.target === e.currentTarget && setModalType(null)}>
           <div style={S.modal}>
@@ -566,7 +611,6 @@ export default function StockApp() {
         </div>
       )}
 
-      {/* MODAL Movement */}
       {modalType === "movement" && movProduct && (
         <div style={S.modalOverlay} onClick={e => e.target === e.currentTarget && setModalType(null)}>
           <div style={S.modal}>
