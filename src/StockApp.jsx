@@ -69,13 +69,15 @@ function BarcodeScanner({ onDetected }) {
   const [starting, setStarting] = useState(true);
   const [manual, setManual] = useState("");
   const detectedRef = useRef(false);
+  const quaggaRef = useRef(null);
+  const resultsRef = useRef({});
 
   useEffect(() => {
-    let Quagga;
     async function start() {
       try {
         const mod = await import("@ericblade/quagga2");
-        Quagga = mod.default;
+        const Quagga = mod.default;
+        quaggaRef.current = Quagga;
 
         await new Promise((resolve, reject) => {
           Quagga.init({
@@ -83,13 +85,33 @@ function BarcodeScanner({ onDetected }) {
               type: "LiveStream",
               target: scannerRef.current,
               constraints: {
-                facingMode: "environment",
-                width: { ideal: 1280 },
-                height: { ideal: 720 },
+                facingMode: { ideal: "environment" },
+                width: { min: 640, ideal: 1280, max: 1920 },
+                height: { min: 480, ideal: 720, max: 1080 },
+              },
+              area: {
+                top: "20%",
+                right: "10%",
+                left: "10%",
+                bottom: "20%",
               },
             },
+            locator: {
+              patchSize: "medium",
+              halfSample: true,
+            },
+            numOfWorkers: 2,
+            frequency: 10,
             decoder: {
-              readers: ["ean_reader", "ean_8_reader", "code_128_reader", "code_39_reader", "upc_reader", "upc_e_reader"],
+              readers: [
+                "ean_reader",
+                "ean_8_reader",
+                "code_128_reader",
+                "code_39_reader",
+                "upc_reader",
+                "upc_e_reader",
+              ],
+              multiple: false,
             },
             locate: true,
           }, (err) => {
@@ -101,13 +123,31 @@ function BarcodeScanner({ onDetected }) {
         Quagga.start();
         setStarting(false);
 
+        // Validar con múltiples lecturas para evitar falsos positivos
+        Quagga.onProcessed((result) => {
+          const drawingCtx = Quagga.canvas.ctx.overlay;
+          const drawingCanvas = Quagga.canvas.dom.overlay;
+          if (result) {
+            if (result.boxes) {
+              drawingCtx.clearRect(0, 0, drawingCanvas.getAttribute("width"), drawingCanvas.getAttribute("height"));
+            }
+            if (result.box) {
+              Quagga.ImageDebug.drawPath(result.box, { x: 0, y: 1 }, drawingCtx, { color: "#5b8def", lineWidth: 2 });
+            }
+          }
+        });
+
         Quagga.onDetected((result) => {
           if (detectedRef.current) return;
           const code = result?.codeResult?.code;
-          if (code) {
+          if (!code) return;
+
+          // Acumular lecturas del mismo código para validar
+          resultsRef.current[code] = (resultsRef.current[code] || 0) + 1;
+
+          if (resultsRef.current[code] >= 3) {
             detectedRef.current = true;
-            // Vibrar si el dispositivo lo soporta
-            if (navigator.vibrate) navigator.vibrate(100);
+            if (navigator.vibrate) navigator.vibrate(150);
             onDetected(code);
           }
         });
@@ -120,7 +160,13 @@ function BarcodeScanner({ onDetected }) {
     start();
 
     return () => {
-      try { if (Quagga) { Quagga.stop(); Quagga.offDetected(); } } catch {}
+      try {
+        if (quaggaRef.current) {
+          quaggaRef.current.stop();
+          quaggaRef.current.offDetected();
+          quaggaRef.current.offProcessed();
+        }
+      } catch {}
     };
   }, []);
 
