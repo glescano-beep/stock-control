@@ -10,7 +10,7 @@ async function signIn(email, password) {
     body: JSON.stringify({ email, password }),
   });
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error_description || "Error al iniciar sesión");
+  if (!res.ok) throw new Error(data.error_description || "Error");
   return data;
 }
 
@@ -44,6 +44,17 @@ async function sb(path, options = {}, token) {
   return text ? JSON.parse(text) : null;
 }
 
+async function adminCreateUser(email, password) {
+  const res = await fetch(`${SUPABASE_URL}/auth/v1/admin/users`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` },
+    body: JSON.stringify({ email, password, email_confirm: true }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.message || "Error al crear usuario");
+  return data;
+}
+
 const CATEGORIES = ["Electrónica", "Alimentos", "Ropa", "Herramientas", "Limpieza", "Oficina", "Otro"];
 
 function formatDate(iso) {
@@ -51,32 +62,35 @@ function formatDate(iso) {
   return new Date(iso).toLocaleDateString("es-AR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
+// ─── ZXING BARCODE SCANNER (funciona en iPhone Safari y Android Chrome) ──────
 function BarcodeScanner({ onDetected }) {
   const videoRef = useRef(null);
-  const streamRef = useRef(null);
-  const animRef = useRef(null);
   const [error, setError] = useState(null);
   const [scanning, setScanning] = useState(false);
   const [manual, setManual] = useState("");
+  const readerRef = useRef(null);
 
   useEffect(() => {
-    let detector;
+    let codeReader;
     async function start() {
       try {
-        if (!("BarcodeDetector" in window)) { setError("Cámara no soportada. Usá el campo manual."); return; }
-        detector = new window.BarcodeDetector({ formats: ["ean_13", "ean_8", "code_128", "code_39", "upc_a", "upc_e", "qr_code"] });
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-        streamRef.current = stream;
-        if (videoRef.current) { videoRef.current.srcObject = stream; await videoRef.current.play(); setScanning(true); detect(); }
-      } catch { setError("No se pudo acceder a la cámara. Usá el campo manual."); }
-    }
-    async function detect() {
-      if (!videoRef.current || !detector) return;
-      try { const codes = await detector.detect(videoRef.current); if (codes.length > 0) { onDetected(codes[0].rawValue); return; } } catch {}
-      animRef.current = requestAnimationFrame(detect);
+        const ZXing = await import("@zxing/library");
+        codeReader = new ZXing.BrowserMultiFormatReader();
+        readerRef.current = codeReader;
+        const devices = await ZXing.BrowserMultiFormatReader.listVideoInputDevices();
+        if (!devices || devices.length === 0) { setError("No se encontró cámara. Usá el campo manual."); return; }
+        // Preferir cámara trasera
+        const back = devices.find(d => /back|rear|environment/i.test(d.label)) || devices[devices.length - 1];
+        setScanning(true);
+        await codeReader.decodeFromVideoDevice(back.deviceId, videoRef.current, (result, err) => {
+          if (result) { onDetected(result.getText()); }
+        });
+      } catch (e) {
+        setError("No se pudo acceder a la cámara. Usá el campo manual.");
+      }
     }
     start();
-    return () => { streamRef.current?.getTracks().forEach(t => t.stop()); if (animRef.current) cancelAnimationFrame(animRef.current); };
+    return () => { try { readerRef.current?.reset(); } catch {} };
   }, []);
 
   return (
@@ -85,17 +99,18 @@ function BarcodeScanner({ onDetected }) {
         <video ref={videoRef} style={{ width: "100%", height: "100%", objectFit: "cover" }} playsInline muted />
         {scanning && (
           <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
-            <div style={{ width: "75%", height: "30%", border: "2px solid #5b8def", borderRadius: 8, boxShadow: "0 0 0 9999px rgba(0,0,0,0.45)" }} />
+            <div style={{ width: "75%", height: "28%", border: "2px solid #5b8def", borderRadius: 8, boxShadow: "0 0 0 9999px rgba(0,0,0,0.5)" }} />
           </div>
         )}
-        {error && <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, textAlign: "center", fontSize: 13, color: "#f0904a" }}>{error}</div>}
+        {error && <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, textAlign: "center", fontSize: 13, color: "#f0904a", background: "#0a0c12" }}>{error}</div>}
+        {!scanning && !error && <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", color: "#8b90a8", fontSize: 13 }}>Iniciando cámara...</div>}
       </div>
       <div>
         <label style={{ fontSize: 12, color: "#8b90a8", fontWeight: 500, display: "block", marginBottom: 6 }}>O ingresá el código manualmente:</label>
         <div style={{ display: "flex", gap: 8 }}>
           <input style={{ flex: 1, background: "#1e2130", border: "1px solid #252839", borderRadius: 9, padding: "10px 14px", color: "#e8eaf0", fontSize: 15, fontFamily: "monospace", outline: "none" }}
             placeholder="Ej: 7891234560001" value={manual} onChange={e => setManual(e.target.value)}
-            onKeyDown={e => e.key === "Enter" && manual.trim() && onDetected(manual.trim())} autoFocus={!!error} />
+            onKeyDown={e => e.key === "Enter" && manual.trim() && onDetected(manual.trim())} />
           <button onClick={() => manual.trim() && onDetected(manual.trim())}
             style={{ background: "#5b8def", color: "#fff", border: "none", borderRadius: 9, padding: "10px 18px", fontWeight: 600, fontSize: 14, cursor: "pointer" }}>
             Buscar
@@ -106,6 +121,7 @@ function BarcodeScanner({ onDetected }) {
   );
 }
 
+// ─── LOGIN ────────────────────────────────────────────────────────────────────
 function LoginScreen({ onLogin }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -124,10 +140,10 @@ function LoginScreen({ onLogin }) {
   };
 
   return (
-    <div style={{ minHeight: "100vh", background: "#0f1117", display: "flex", alignItems: "center", justifyContent: "center", padding: 20, fontFamily: "sans-serif" }}>
+    <div style={{ minHeight: "100vh", background: "#0f1117", display: "flex", alignItems: "center", justifyContent: "center", padding: 20, fontFamily: "system-ui, sans-serif" }}>
       <div style={{ width: "100%", maxWidth: 380 }}>
         <div style={{ textAlign: "center", marginBottom: 36 }}>
-          <div style={{ width: 56, height: 56, background: "#5b8def", borderRadius: 16, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 28, margin: "0 auto 16px" }}>📦</div>
+          <div style={{ width: 60, height: 60, background: "#5b8def", borderRadius: 18, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 30, margin: "0 auto 14px" }}>📦</div>
           <div style={{ fontSize: 22, fontWeight: 700, color: "#e8eaf0" }}>StockControl</div>
           <div style={{ fontSize: 13, color: "#8b90a8", marginTop: 4 }}>Technik</div>
         </div>
@@ -152,11 +168,13 @@ function LoginScreen({ onLogin }) {
   );
 }
 
+// ─── MAIN APP ─────────────────────────────────────────────────────────────────
 export default function StockApp() {
   const [auth, setAuth] = useState(null);
   const [view, setView] = useState("dashboard");
   const [products, setProducts] = useState([]);
   const [movements, setMovements] = useState([]);
+  const [users, setUsers] = useState([]);
   const [search, setSearch] = useState("");
   const [filterCat, setFilterCat] = useState("Todas");
   const [modalType, setModalType] = useState(null);
@@ -168,6 +186,10 @@ export default function StockApp() {
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState(null);
   const [form, setForm] = useState({ name: "", barcode: "", category: "Otro", description: "", stock: 0, min_stock: 5, price: 0 });
+  const [newUserEmail, setNewUserEmail] = useState("");
+  const [newUserPass, setNewUserPass] = useState("");
+  const [newUserRole, setNewUserRole] = useState("operador");
+  const [creatingUser, setCreatingUser] = useState(false);
 
   const isAdmin = auth?.profile?.role === "admin";
   const token = auth?.session?.access_token;
@@ -187,7 +209,15 @@ export default function StockApp() {
     } catch { showToast("Error conectando con la base de datos", "err"); }
   }, [token]);
 
-  useEffect(() => { if (token) loadAll(); }, [loadAll]);
+  const loadUsers = useCallback(async () => {
+    if (!token || !isAdmin) return;
+    try {
+      const data = await sb("profiles?select=*&order=created_at.asc", {}, token);
+      setUsers(data || []);
+    } catch { showToast("Error cargando usuarios", "err"); }
+  }, [token, isAdmin]);
+
+  useEffect(() => { if (token) { loadAll(); if (isAdmin) loadUsers(); } }, [loadAll, loadUsers]);
 
   if (!auth) return <LoginScreen onLogin={setAuth} />;
 
@@ -241,6 +271,28 @@ export default function StockApp() {
     }, 200);
   };
 
+  const handleCreateUser = async () => {
+    if (!newUserEmail.trim() || !newUserPass.trim()) return showToast("Completá email y contraseña", "err");
+    setCreatingUser(true);
+    try {
+      const newUser = await adminCreateUser(newUserEmail, newUserPass);
+      // Set role in profiles
+      await sb(`profiles?id=eq.${newUser.id}`, { method: "PATCH", body: JSON.stringify({ role: newUserRole }) }, token);
+      showToast("Usuario creado ✓");
+      setNewUserEmail(""); setNewUserPass(""); setNewUserRole("operador");
+      await loadUsers();
+    } catch (e) { showToast(e.message || "Error al crear usuario", "err"); }
+    finally { setCreatingUser(false); }
+  };
+
+  const changeUserRole = async (userId, role) => {
+    try {
+      await sb(`profiles?id=eq.${userId}`, { method: "PATCH", body: JSON.stringify({ role }) }, token);
+      showToast("Rol actualizado ✓");
+      await loadUsers();
+    } catch { showToast("Error al cambiar rol", "err"); }
+  };
+
   const filtered = products.filter(p => {
     const s = search.toLowerCase();
     return (p.name?.toLowerCase().includes(s) || p.barcode?.includes(s)) && (filterCat === "Todas" || p.category === filterCat);
@@ -260,8 +312,12 @@ export default function StockApp() {
     tabBar: { display: "flex", background: "#12141c", borderTop: "1px solid #1e2130", position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 50 },
   };
 
+  const tabs = [["dashboard","📊","Dashboard"],["products","📦","Productos"],["movements","🔄","Historial"],
+    ...(isAdmin ? [["users","👥","Usuarios"]] : [])];
+
   return (
     <div style={S.page}>
+      {/* Header */}
       <div style={S.header}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <div style={{ width: 28, height: 28, background: "#5b8def", borderRadius: 7, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15 }}>📦</div>
@@ -280,6 +336,7 @@ export default function StockApp() {
 
       <div style={{ padding: "18px 14px 90px", maxWidth: 1000, margin: "0 auto" }}>
 
+        {/* DASHBOARD */}
         {view === "dashboard" && (
           <div>
             <h2 style={{ fontSize: 19, fontWeight: 700, marginBottom: 18 }}>Dashboard</h2>
@@ -331,6 +388,7 @@ export default function StockApp() {
           </div>
         )}
 
+        {/* PRODUCTS */}
         {view === "products" && (
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
@@ -347,14 +405,14 @@ export default function StockApp() {
             <div style={S.card}>
               {filtered.length === 0 && <div style={{ padding: 24, textAlign: "center", color: "#8b90a8" }}>No se encontraron productos</div>}
               {filtered.map(p => (
-                <div key={p.id} style={{ ...S.row }}>
+                <div key={p.id} style={S.row}>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
                       {p.name}
                       {p.stock <= p.min_stock && <span style={{ background: "#3d2718", color: "#f0904a", fontSize: 10, fontWeight: 700, padding: "2px 6px", borderRadius: 20 }}>⚠️</span>}
                     </div>
                     {p.barcode && <div style={{ fontSize: 11, color: "#8b90a8", fontFamily: "monospace" }}>{p.barcode}</div>}
-                    <div style={{ fontSize: 12, marginTop: 2, display: "flex", gap: 8 }}>
+                    <div style={{ fontSize: 12, marginTop: 2, display: "flex", gap: 8, flexWrap: "wrap" }}>
                       <span style={{ color: "#7b9ef5" }}>{p.category}</span>
                       <span style={{ color: p.stock <= p.min_stock ? "#f0904a" : "#4ade80", fontFamily: "monospace", fontWeight: 700 }}>{p.stock} uds</span>
                       {isAdmin && <span style={{ color: "#8b90a8" }}>${Number(p.price).toLocaleString("es-AR")}</span>}
@@ -371,6 +429,7 @@ export default function StockApp() {
           </div>
         )}
 
+        {/* MOVEMENTS */}
         {view === "movements" && (
           <div>
             <h2 style={{ fontSize: 19, fontWeight: 700, marginBottom: 14 }}>Historial</h2>
@@ -392,10 +451,71 @@ export default function StockApp() {
             </div>
           </div>
         )}
+
+        {/* USERS (Admin only) */}
+        {view === "users" && isAdmin && (
+          <div>
+            <h2 style={{ fontSize: 19, fontWeight: 700, marginBottom: 18 }}>Gestión de usuarios</h2>
+
+            {/* Create user */}
+            <div style={{ ...S.card, marginBottom: 20, padding: 20 }}>
+              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 16, color: "#5b8def" }}>➕ Crear nuevo usuario</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                <div>
+                  <label style={{ fontSize: 12, color: "#8b90a8", fontWeight: 500, display: "block", marginBottom: 5 }}>Email</label>
+                  <input style={S.input} type="email" placeholder="usuario@email.com" value={newUserEmail} onChange={e => setNewUserEmail(e.target.value)} />
+                </div>
+                <div>
+                  <label style={{ fontSize: 12, color: "#8b90a8", fontWeight: 500, display: "block", marginBottom: 5 }}>Contraseña</label>
+                  <input style={S.input} type="password" placeholder="Mínimo 6 caracteres" value={newUserPass} onChange={e => setNewUserPass(e.target.value)} />
+                </div>
+                <div>
+                  <label style={{ fontSize: 12, color: "#8b90a8", fontWeight: 500, display: "block", marginBottom: 5 }}>Rol</label>
+                  <div style={{ display: "flex", gap: 10 }}>
+                    {["operador", "admin"].map(r => (
+                      <button key={r} onClick={() => setNewUserRole(r)} style={{ flex: 1, padding: "10px", border: `2px solid ${newUserRole === r ? (r === "admin" ? "#5b8def" : "#4ade80") : "#252839"}`, borderRadius: 10, background: newUserRole === r ? (r === "admin" ? "#1e2f50" : "#1a2f23") : "#1e2130", color: newUserRole === r ? (r === "admin" ? "#5b8def" : "#4ade80") : "#8b90a8", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
+                        {r === "admin" ? "👑 Admin" : "👤 Operador"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <button style={{ ...S.btnPrimary, padding: "11px", fontSize: 14, opacity: creatingUser ? 0.6 : 1 }} onClick={handleCreateUser} disabled={creatingUser}>
+                  {creatingUser ? "Creando..." : "Crear usuario"}
+                </button>
+              </div>
+            </div>
+
+            {/* User list */}
+            <div style={S.card}>
+              <div style={{ fontSize: 13, fontWeight: 600, padding: "12px 16px", borderBottom: "1px solid #1e2130" }}>👥 Usuarios registrados ({users.length})</div>
+              {users.length === 0 && <div style={{ padding: 24, textAlign: "center", color: "#8b90a8", fontSize: 13 }}>Sin usuarios</div>}
+              {users.map(u => (
+                <div key={u.id} style={{ ...S.row, justifyContent: "space-between" }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{u.email}</div>
+                    <div style={{ fontSize: 11, color: "#8b90a8", marginTop: 2 }}>Creado: {formatDate(u.created_at)}</div>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, padding: "3px 9px", borderRadius: 20, background: u.role === "admin" ? "#1e2f50" : "#1a2f23", color: u.role === "admin" ? "#5b8def" : "#4ade80" }}>
+                      {u.role === "admin" ? "👑 Admin" : "👤 Operador"}
+                    </span>
+                    {u.id !== auth.session.user.id && (
+                      <button style={S.btnGhost} onClick={() => changeUserRole(u.id, u.role === "admin" ? "operador" : "admin")}
+                        title={u.role === "admin" ? "Cambiar a Operador" : "Cambiar a Admin"}>
+                        🔄
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
+      {/* Bottom tab bar */}
       <div style={S.tabBar}>
-        {[["dashboard","📊","Dashboard"],["products","📦","Productos"],["movements","🔄","Historial"]].map(([v,icon,label]) => (
+        {tabs.map(([v, icon, label]) => (
           <button key={v} onClick={() => setView(v)} style={{ flex: 1, background: "none", border: "none", cursor: "pointer", padding: "10px 4px 8px", display: "flex", flexDirection: "column", alignItems: "center", gap: 3, color: view === v ? "#5b8def" : "#8b90a8", fontSize: 10, fontWeight: 500 }}>
             <span style={{ fontSize: 20 }}>{icon}</span>{label}
           </button>
@@ -405,6 +525,7 @@ export default function StockApp() {
         </button>
       </div>
 
+      {/* MODAL Scanner */}
       {modalType === "scanner" && (
         <div style={S.modalOverlay} onClick={e => e.target === e.currentTarget && setModalType(null)}>
           <div style={S.modal}>
@@ -417,6 +538,7 @@ export default function StockApp() {
         </div>
       )}
 
+      {/* MODAL Product */}
       {modalType === "product" && isAdmin && (
         <div style={S.modalOverlay} onClick={e => e.target === e.currentTarget && setModalType(null)}>
           <div style={S.modal}>
@@ -424,7 +546,7 @@ export default function StockApp() {
               <div style={{ fontSize: 16, fontWeight: 700 }}>{editProduct ? "Editar producto" : "Nuevo producto"}</div>
               <button style={S.btnGhost} onClick={() => setModalType(null)}>✕</button>
             </div>
-            {[{ label:"Nombre *",key:"name",type:"text",ph:"Ej: Cable HDMI 2m"},{label:"Código de barras",key:"barcode",type:"text",ph:"Ej: 7891234560001"},{label:"Descripción",key:"description",type:"text",ph:"Descripción breve"},{label:"Stock actual",key:"stock",type:"number",ph:"0"},{label:"Stock mínimo",key:"min_stock",type:"number",ph:"5"},{label:"Precio ($)",key:"price",type:"number",ph:"0"}].map(f => (
+            {[{label:"Nombre *",key:"name",type:"text",ph:"Ej: Cable HDMI 2m"},{label:"Código de barras",key:"barcode",type:"text",ph:"Ej: 7891234560001"},{label:"Descripción",key:"description",type:"text",ph:"Descripción breve"},{label:"Stock actual",key:"stock",type:"number",ph:"0"},{label:"Stock mínimo",key:"min_stock",type:"number",ph:"5"},{label:"Precio ($)",key:"price",type:"number",ph:"0"}].map(f => (
               <div key={f.key} style={{ marginBottom: 12 }}>
                 <label style={{ fontSize: 12, color: "#8b90a8", fontWeight: 500, display: "block", marginBottom: 5 }}>{f.label}</label>
                 <input style={S.input} type={f.type} placeholder={f.ph} value={form[f.key]} onChange={e => setForm(p => ({ ...p, [f.key]: e.target.value }))} />
@@ -444,6 +566,7 @@ export default function StockApp() {
         </div>
       )}
 
+      {/* MODAL Movement */}
       {modalType === "movement" && movProduct && (
         <div style={S.modalOverlay} onClick={e => e.target === e.currentTarget && setModalType(null)}>
           <div style={S.modal}>
