@@ -326,11 +326,17 @@ export default function StockApp() {
   };
 
   const handleScanDetected = (code) => {
-    const found = products.find(p => p.barcode === code.trim());
+    const cleanCode = code.trim();
+const found = products.find(p => p.barcode === cleanCode);
     setModalType(null);
     setTimeout(() => {
       if (found) openMovement(found);
-      else { showToast(`Código no encontrado`, "err"); if (isAdmin) { setForm(f => ({ ...f, barcode: code })); openNewProduct(); } }
+      else {
+  if (isAdmin) {
+    setEditProduct(null);
+    setForm({ name: "", barcode: cleanCode, category: "Otro", description: "", stock: 0, min_stock: 5, price: 0 });
+    setModalType("product");
+else { showToast(`Código no encontrado`, "err"); if (isAdmin) { setForm(f => ({ ...f, barcode: code })); openNewProduct(); } }
     }, 200);
   };
 
