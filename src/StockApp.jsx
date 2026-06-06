@@ -62,119 +62,111 @@ function formatDate(iso) {
   return new Date(iso).toLocaleDateString("es-AR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
-// ─── BARCODE SCANNER con html5-qrcode ────────────────────────────────────────
+// ─── BARCODE SCANNER ─────────────────────────────────────────────────────────
 function BarcodeScanner({ onDetected }) {
-  const scannerDivId = "html5-qrcode-scanner";
-  const [error, setError] = useState(null);
-  const [starting, setStarting] = useState(true);
   const [manual, setManual] = useState("");
-  const scannerRef = useRef(null);
+  const [scanning, setScanning] = useState(false);
+  const [error, setError] = useState(null);
   const detectedRef = useRef(false);
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
 
   useEffect(() => {
+    if (isIOS) return;
     let scanner;
-    async function start() {
+    const divId = "qr-stream-div";
+    async function startStream() {
       try {
         const { Html5Qrcode } = await import("html5-qrcode");
-        scanner = new Html5Qrcode(scannerDivId);
-        scannerRef.current = scanner;
-
+        scanner = new Html5Qrcode(divId);
         const cameras = await Html5Qrcode.getCameras();
-        if (!cameras || cameras.length === 0) {
-          setError("No se encontró cámara. Usá el campo manual.");
-          setStarting(false);
-          return;
-        }
-
-        // Preferir cámara trasera
+        if (!cameras?.length) { setError("No se encontró cámara."); return; }
         const back = cameras.find(c => /back|rear|environment/i.test(c.label)) || cameras[cameras.length - 1];
-
-        await scanner.start(
-          back.id,
-          {
-            fps: 15,
-            qrbox: { width: 280, height: 160 },
-            aspectRatio: 1.5,
-            formatsToSupport: [
-              0,  // QR_CODE
-              1,  // AZTEC
-              4,  // CODE_128
-              6,  // CODE_39
-              8,  // DATA_MATRIX
-              11, // EAN_13
-              12, // EAN_8
-              14, // ITF
-              17, // UPC_A
-              18, // UPC_E
-            ],
-          },
-          (decodedText) => {
+        await scanner.start(back.id, { fps: 15, qrbox: { width: 260, height: 150 } },
+          (code) => {
             if (detectedRef.current) return;
             detectedRef.current = true;
             if (navigator.vibrate) navigator.vibrate(150);
-            onDetected(decodedText);
-          },
-          () => {} // errores de frame, ignorar
+            onDetected(code);
+          }, () => {}
         );
-        setStarting(false);
-      } catch (e) {
-        setError("No se pudo acceder a la cámara. Usá el campo manual.");
-        setStarting(false);
-      }
+        setScanning(true);
+      } catch { setError("No se pudo acceder a la cámara. Usá el campo manual."); }
     }
-
-    start();
-
-    return () => {
-      try {
-        if (scannerRef.current) {
-          scannerRef.current.stop().then(() => scannerRef.current.clear()).catch(() => {});
-        }
-      } catch {}
-    };
+    startStream();
+    return () => { try { scanner?.stop().catch(() => {}); } catch {} };
   }, []);
 
+  const handleFileChange = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setError(null);
+    try {
+      const { Html5Qrcode } = await import("html5-qrcode");
+      const reader = new Html5Qrcode("qr-file-div");
+      const result = await reader.scanFile(file, true);
+      onDetected(result);
+    } catch {
+      setError("No se pudo leer el código. Intentá con mejor iluminación y más cerca.");
+    }
+  };
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      <div style={{ position: "relative", borderRadius: 12, overflow: "hidden", background: "#0a0c12", minHeight: 240 }}>
-
-        {/* html5-qrcode renderiza acá */}
-        <div id={scannerDivId} style={{ width: "100%" }} />
-
-        {starting && !error && (
-          <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, background: "#0a0c12" }}>
-            <div style={{ width: 32, height: 32, border: "3px solid #1e2130", borderTop: "3px solid #5b8def", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
-            <div style={{ color: "#8b90a8", fontSize: 13 }}>Iniciando cámara...</div>
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {isIOS && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <div style={{ background: "#1e2130", border: "2px dashed #252839", borderRadius: 12, padding: 24, textAlign: "center" }}>
+            <div style={{ fontSize: 40, marginBottom: 10 }}>📷</div>
+            <div style={{ fontSize: 14, fontWeight: 600, color: "#e8eaf0", marginBottom: 6 }}>Fotografiá el código de barras</div>
+            <div style={{ fontSize: 12, color: "#8b90a8", marginBottom: 16 }}>Apuntá bien al código con buena luz.</div>
+            <label style={{ background: "#5b8def", color: "#fff", border: "none", borderRadius: 9, padding: "12px 24px", fontSize: 15, fontWeight: 700, cursor: "pointer", display: "inline-block" }}>
+              📸 Abrir cámara
+              <input type="file" accept="image/*" capture="environment" onChange={handleFileChange} style={{ display: "none" }} />
+            </label>
           </div>
-        )}
+          {error && (
+            <div style={{ background: "#3d2718", border: "1px solid #5c3318", borderRadius: 9, padding: "11px 14px", fontSize: 13, color: "#f0904a", textAlign: "center" }}>
+              ⚠️ {error}
+              <br />
+              <label style={{ color: "#5b8def", cursor: "pointer", fontWeight: 600, marginTop: 6, display: "inline-block" }}>
+                Intentar de nuevo
+                <input type="file" accept="image/*" capture="environment" onChange={handleFileChange} style={{ display: "none" }} />
+              </label>
+            </div>
+          )}
+        </div>
+      )}
 
-        {error && (
-          <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, textAlign: "center", fontSize: 13, color: "#f0904a", background: "#0a0c12" }}>
-            📷 {error}
-          </div>
-        )}
-      </div>
+      {!isIOS && (
+        <div style={{ position: "relative", borderRadius: 12, overflow: "hidden", background: "#0a0c12", minHeight: 220 }}>
+          <div id="qr-stream-div" style={{ width: "100%" }} />
+          {!scanning && !error && (
+            <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, background: "#0a0c12" }}>
+              <div style={{ width: 28, height: 28, border: "3px solid #1e2130", borderTop: "3px solid #5b8def", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
+              <div style={{ color: "#8b90a8", fontSize: 13 }}>Iniciando cámara...</div>
+            </div>
+          )}
+          {error && (
+            <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, textAlign: "center", fontSize: 13, color: "#f0904a", background: "#0a0c12" }}>
+              📷 {error}
+            </div>
+          )}
+        </div>
+      )}
 
-      <style>{`
-        @keyframes spin { to { transform: rotate(360deg); } }
-        #${scannerDivId} video { border-radius: 10px; }
-        #${scannerDivId} img { display: none; }
-      `}</style>
+      <div id="qr-file-div" style={{ display: "none" }} />
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
 
       <div>
-        <label style={{ fontSize: 12, color: "#8b90a8", fontWeight: 500, display: "block", marginBottom: 6 }}>
-          O ingresá el código manualmente:
-        </label>
+        <label style={{ fontSize: 12, color: "#8b90a8", fontWeight: 500, display: "block", marginBottom: 6 }}>O ingresá el código manualmente:</label>
         <div style={{ display: "flex", gap: 8 }}>
           <input
             style={{ flex: 1, background: "#1e2130", border: "1px solid #252839", borderRadius: 9, padding: "10px 14px", color: "#e8eaf0", fontSize: 15, fontFamily: "monospace", outline: "none" }}
-            placeholder="Ej: 7891234560001"
+            placeholder="Ej: 7798060853034"
             value={manual}
             onChange={e => setManual(e.target.value)}
             onKeyDown={e => e.key === "Enter" && manual.trim() && onDetected(manual.trim())}
           />
-          <button
-            onClick={() => manual.trim() && onDetected(manual.trim())}
+          <button onClick={() => manual.trim() && onDetected(manual.trim())}
             style={{ background: "#5b8def", color: "#fff", border: "none", borderRadius: 9, padding: "10px 18px", fontWeight: 600, fontSize: 14, cursor: "pointer" }}>
             Buscar
           </button>
@@ -253,6 +245,7 @@ export default function StockApp() {
   const [newUserPass, setNewUserPass] = useState("");
   const [newUserRole, setNewUserRole] = useState("operador");
   const [creatingUser, setCreatingUser] = useState(false);
+  const scannedCodeRef = useRef("");
 
   const isAdmin = auth?.profile?.role === "admin";
   const token = auth?.session?.access_token;
@@ -282,23 +275,47 @@ export default function StockApp() {
 
   useEffect(() => { if (token) { loadAll(); if (isAdmin) loadUsers(); } }, [loadAll, loadUsers]);
 
+  // Cuando se abre el modal de producto y hay un código escaneado, cargarlo
+  useEffect(() => {
+    if (modalType === "product" && scannedCodeRef.current && !editProduct) {
+      setForm(f => ({ ...f, barcode: scannedCodeRef.current }));
+    }
+  }, [modalType]);
+
   if (!auth) return <LoginScreen onLogin={setAuth} />;
 
   const alerts = products.filter(p => p.stock <= p.min_stock);
   const totalStock = products.reduce((a, b) => a + (b.stock || 0), 0);
   const totalValue = products.reduce((a, b) => a + (b.stock || 0) * (b.price || 0), 0);
 
-  const openNewProduct = () => { setEditProduct(null); setForm({ name: "", barcode: "", category: "Otro", description: "", stock: 0, min_stock: 5, price: 0 }); setModalType("product"); };
-  const openEditProduct = (p) => { setEditProduct(p); setForm({ name: p.name, barcode: p.barcode || "", category: p.category || "Otro", description: p.description || "", stock: p.stock, min_stock: p.min_stock, price: p.price }); setModalType("product"); };
+  const openNewProduct = () => {
+    setEditProduct(null);
+    setForm({ name: "", barcode: scannedCodeRef.current || "", category: "Otro", description: "", stock: 0, min_stock: 5, price: 0 });
+    setModalType("product");
+  };
+
+  const openEditProduct = (p) => {
+    scannedCodeRef.current = "";
+    setEditProduct(p);
+    setForm({ name: p.name, barcode: p.barcode || "", category: p.category || "Otro", description: p.description || "", stock: p.stock, min_stock: p.min_stock, price: p.price });
+    setModalType("product");
+  };
 
   const saveProduct = async () => {
     if (!form.name.trim()) return showToast("El nombre es requerido", "err");
     setSaving(true);
     try {
       const data = { ...form, stock: Number(form.stock), min_stock: Number(form.min_stock), price: Number(form.price) };
-      if (editProduct) { await sb(`products?id=eq.${editProduct.id}`, { method: "PATCH", body: JSON.stringify(data) }, token); showToast("Producto actualizado ✓"); }
-      else { await sb("products", { method: "POST", body: JSON.stringify(data) }, token); showToast("Producto creado ✓"); }
-      await loadAll(); setModalType(null);
+      if (editProduct) {
+        await sb(`products?id=eq.${editProduct.id}`, { method: "PATCH", body: JSON.stringify(data) }, token);
+        showToast("Producto actualizado ✓");
+      } else {
+        await sb("products", { method: "POST", body: JSON.stringify(data) }, token);
+        showToast("Producto creado ✓");
+      }
+      scannedCodeRef.current = "";
+      await loadAll();
+      setModalType(null);
     } catch { showToast("Error al guardar", "err"); } finally { setSaving(false); }
   };
 
@@ -327,17 +344,20 @@ export default function StockApp() {
 
   const handleScanDetected = (code) => {
     const cleanCode = code.trim();
-const found = products.find(p => p.barcode === cleanCode);
+    const found = products.find(p => p.barcode === cleanCode);
     setModalType(null);
-    setTimeout(() => {
-      if (found) openMovement(found);
-      else {
-  if (isAdmin) {
-    setEditProduct(null);
-    setForm({ name: "", barcode: cleanCode, category: "Otro", description: "", stock: 0, min_stock: 5, price: 0 });
-    setModalType("product");
-else { showToast(`Código no encontrado`, "err"); if (isAdmin) { setForm(f => ({ ...f, barcode: code })); openNewProduct(); } }
-    }, 200);
+    if (found) {
+      setTimeout(() => openMovement(found), 300);
+    } else {
+      if (isAdmin) {
+        scannedCodeRef.current = cleanCode;
+        setEditProduct(null);
+        setForm({ name: "", barcode: cleanCode, category: "Otro", description: "", stock: 0, min_stock: 5, price: 0 });
+        setTimeout(() => setModalType("product"), 300);
+      } else {
+        showToast(`Código ${cleanCode} no encontrado`, "err");
+      }
+    }
   };
 
   const handleCreateUser = async () => {
@@ -458,7 +478,7 @@ else { showToast(`Código no encontrado`, "err"); if (isAdmin) { setForm(f => ({
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
               <h2 style={{ fontSize: 19, fontWeight: 700 }}>Productos</h2>
-              {isAdmin && <button style={S.btnPrimary} onClick={openNewProduct}>+ Nuevo</button>}
+              {isAdmin && <button style={S.btnPrimary} onClick={() => { scannedCodeRef.current = ""; openNewProduct(); }}>+ Nuevo</button>}
             </div>
             <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
               <input style={{ ...S.input, flex: 1, minWidth: 160 }} placeholder="🔍 Nombre o código..." value={search} onChange={e => setSearch(e.target.value)} />
@@ -598,10 +618,23 @@ else { showToast(`Código no encontrado`, "err"); if (isAdmin) { setForm(f => ({
               <div style={{ fontSize: 16, fontWeight: 700 }}>{editProduct ? "Editar producto" : "Nuevo producto"}</div>
               <button style={S.btnGhost} onClick={() => setModalType(null)}>✕</button>
             </div>
-            {[{label:"Nombre *",key:"name",type:"text",ph:"Ej: Cable HDMI 2m"},{label:"Código de barras",key:"barcode",type:"text",ph:"Ej: 7891234560001"},{label:"Descripción",key:"description",type:"text",ph:"Descripción breve"},{label:"Stock actual",key:"stock",type:"number",ph:"0"},{label:"Stock mínimo",key:"min_stock",type:"number",ph:"5"},{label:"Precio ($)",key:"price",type:"number",ph:"0"}].map(f => (
+            {[
+              {label:"Nombre *", key:"name", type:"text", ph:"Ej: Sal Elcor 500g"},
+              {label:"Código de barras", key:"barcode", type:"text", ph:"Ej: 7798060853034"},
+              {label:"Descripción", key:"description", type:"text", ph:"Descripción breve"},
+              {label:"Stock actual", key:"stock", type:"number", ph:"0"},
+              {label:"Stock mínimo", key:"min_stock", type:"number", ph:"5"},
+              {label:"Precio ($)", key:"price", type:"number", ph:"0"},
+            ].map(f => (
               <div key={f.key} style={{ marginBottom: 12 }}>
                 <label style={{ fontSize: 12, color: "#8b90a8", fontWeight: 500, display: "block", marginBottom: 5 }}>{f.label}</label>
-                <input style={S.input} type={f.type} placeholder={f.ph} value={form[f.key]} onChange={e => setForm(p => ({ ...p, [f.key]: e.target.value }))} />
+                <input
+                  style={S.input}
+                  type={f.type}
+                  placeholder={f.ph}
+                  value={form[f.key]}
+                  onChange={e => setForm(p => ({ ...p, [f.key]: e.target.value }))}
+                />
               </div>
             ))}
             <div style={{ marginBottom: 18 }}>
@@ -612,7 +645,9 @@ else { showToast(`Código no encontrado`, "err"); if (isAdmin) { setForm(f => ({
             </div>
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
               <button style={S.btnGhost} onClick={() => setModalType(null)}>Cancelar</button>
-              <button style={{ ...S.btnPrimary, opacity: saving ? 0.6 : 1 }} onClick={saveProduct} disabled={saving}>{saving ? "Guardando..." : editProduct ? "Guardar" : "Crear"}</button>
+              <button style={{ ...S.btnPrimary, opacity: saving ? 0.6 : 1 }} onClick={saveProduct} disabled={saving}>
+                {saving ? "Guardando..." : editProduct ? "Guardar" : "Crear"}
+              </button>
             </div>
           </div>
         </div>
