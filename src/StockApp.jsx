@@ -62,95 +62,61 @@ function formatDate(iso) {
   return new Date(iso).toLocaleDateString("es-AR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
-// ─── BARCODE SCANNER con Quagga2 ─────────────────────────────────────────────
+// ─── BARCODE SCANNER con html5-qrcode ────────────────────────────────────────
 function BarcodeScanner({ onDetected }) {
-  const scannerRef = useRef(null);
+  const scannerDivId = "html5-qrcode-scanner";
   const [error, setError] = useState(null);
   const [starting, setStarting] = useState(true);
   const [manual, setManual] = useState("");
+  const scannerRef = useRef(null);
   const detectedRef = useRef(false);
-  const quaggaRef = useRef(null);
-  const resultsRef = useRef({});
 
   useEffect(() => {
+    let scanner;
     async function start() {
       try {
-        const mod = await import("@ericblade/quagga2");
-        const Quagga = mod.default;
-        quaggaRef.current = Quagga;
+        const { Html5Qrcode } = await import("html5-qrcode");
+        scanner = new Html5Qrcode(scannerDivId);
+        scannerRef.current = scanner;
 
-        await new Promise((resolve, reject) => {
-          Quagga.init({
-            inputStream: {
-              type: "LiveStream",
-              target: scannerRef.current,
-              constraints: {
-                facingMode: { ideal: "environment" },
-                width: { min: 640, ideal: 1280, max: 1920 },
-                height: { min: 480, ideal: 720, max: 1080 },
-              },
-              area: {
-                top: "20%",
-                right: "10%",
-                left: "10%",
-                bottom: "20%",
-              },
-            },
-            locator: {
-              patchSize: "medium",
-              halfSample: true,
-            },
-            numOfWorkers: 2,
-            frequency: 10,
-            decoder: {
-              readers: [
-                "ean_reader",
-                "ean_8_reader",
-                "code_128_reader",
-                "code_39_reader",
-                "upc_reader",
-                "upc_e_reader",
-              ],
-              multiple: false,
-            },
-            locate: true,
-          }, (err) => {
-            if (err) { reject(err); return; }
-            resolve();
-          });
-        });
+        const cameras = await Html5Qrcode.getCameras();
+        if (!cameras || cameras.length === 0) {
+          setError("No se encontró cámara. Usá el campo manual.");
+          setStarting(false);
+          return;
+        }
 
-        Quagga.start();
-        setStarting(false);
+        // Preferir cámara trasera
+        const back = cameras.find(c => /back|rear|environment/i.test(c.label)) || cameras[cameras.length - 1];
 
-        // Validar con múltiples lecturas para evitar falsos positivos
-        Quagga.onProcessed((result) => {
-          const drawingCtx = Quagga.canvas.ctx.overlay;
-          const drawingCanvas = Quagga.canvas.dom.overlay;
-          if (result) {
-            if (result.boxes) {
-              drawingCtx.clearRect(0, 0, drawingCanvas.getAttribute("width"), drawingCanvas.getAttribute("height"));
-            }
-            if (result.box) {
-              Quagga.ImageDebug.drawPath(result.box, { x: 0, y: 1 }, drawingCtx, { color: "#5b8def", lineWidth: 2 });
-            }
-          }
-        });
-
-        Quagga.onDetected((result) => {
-          if (detectedRef.current) return;
-          const code = result?.codeResult?.code;
-          if (!code) return;
-
-          // Acumular lecturas del mismo código para validar
-          resultsRef.current[code] = (resultsRef.current[code] || 0) + 1;
-
-          if (resultsRef.current[code] >= 3) {
+        await scanner.start(
+          back.id,
+          {
+            fps: 15,
+            qrbox: { width: 280, height: 160 },
+            aspectRatio: 1.5,
+            formatsToSupport: [
+              0,  // QR_CODE
+              1,  // AZTEC
+              4,  // CODE_128
+              6,  // CODE_39
+              8,  // DATA_MATRIX
+              11, // EAN_13
+              12, // EAN_8
+              14, // ITF
+              17, // UPC_A
+              18, // UPC_E
+            ],
+          },
+          (decodedText) => {
+            if (detectedRef.current) return;
             detectedRef.current = true;
             if (navigator.vibrate) navigator.vibrate(150);
-            onDetected(code);
-          }
-        });
+            onDetected(decodedText);
+          },
+          () => {} // errores de frame, ignorar
+        );
+        setStarting(false);
       } catch (e) {
         setError("No se pudo acceder a la cámara. Usá el campo manual.");
         setStarting(false);
@@ -161,10 +127,8 @@ function BarcodeScanner({ onDetected }) {
 
     return () => {
       try {
-        if (quaggaRef.current) {
-          quaggaRef.current.stop();
-          quaggaRef.current.offDetected();
-          quaggaRef.current.offProcessed();
+        if (scannerRef.current) {
+          scannerRef.current.stop().then(() => scannerRef.current.clear()).catch(() => {});
         }
       } catch {}
     };
@@ -172,16 +136,10 @@ function BarcodeScanner({ onDetected }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      <div style={{ position: "relative", borderRadius: 12, overflow: "hidden", background: "#0a0c12", aspectRatio: "4/3" }}>
-        {/* Quagga renderiza el video acá */}
-        <div ref={scannerRef} style={{ width: "100%", height: "100%" }} />
+      <div style={{ position: "relative", borderRadius: 12, overflow: "hidden", background: "#0a0c12", minHeight: 240 }}>
 
-        {/* Overlay de apuntado */}
-        {!error && !starting && (
-          <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
-            <div style={{ width: "80%", height: "25%", border: "2px solid #5b8def", borderRadius: 8, boxShadow: "0 0 0 9999px rgba(0,0,0,0.4)" }} />
-          </div>
-        )}
+        {/* html5-qrcode renderiza acá */}
+        <div id={scannerDivId} style={{ width: "100%" }} />
 
         {starting && !error && (
           <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, background: "#0a0c12" }}>
@@ -195,16 +153,13 @@ function BarcodeScanner({ onDetected }) {
             📷 {error}
           </div>
         )}
-
-        {/* Texto de ayuda */}
-        {!error && !starting && (
-          <div style={{ position: "absolute", bottom: 10, left: 0, right: 0, textAlign: "center", fontSize: 11, color: "rgba(255,255,255,0.6)" }}>
-            Apuntá el código de barras al recuadro azul
-          </div>
-        )}
       </div>
 
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      <style>{`
+        @keyframes spin { to { transform: rotate(360deg); } }
+        #${scannerDivId} video { border-radius: 10px; }
+        #${scannerDivId} img { display: none; }
+      `}</style>
 
       <div>
         <label style={{ fontSize: 12, color: "#8b90a8", fontWeight: 500, display: "block", marginBottom: 6 }}>
