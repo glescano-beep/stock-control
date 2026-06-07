@@ -229,6 +229,7 @@ export default function StockApp() {
   const [view, setView] = useState("dashboard");
   const [products, setProducts] = useState([]);
   const [movements, setMovements] = useState([]);
+  const [withdrawals, setWithdrawals] = useState([]);
   const [users, setUsers] = useState([]);
   const [search, setSearch] = useState("");
   const [filterCat, setFilterCat] = useState("Todas");
@@ -245,6 +246,7 @@ export default function StockApp() {
   const [newUserPass, setNewUserPass] = useState("");
   const [newUserRole, setNewUserRole] = useState("operador");
   const [creatingUser, setCreatingUser] = useState(false);
+  const [selectedWithdrawal, setSelectedWithdrawal] = useState(null);
   const scannedCodeRef = useRef("");
 
   // ── Estado planilla de retiro ──
@@ -255,6 +257,7 @@ export default function StockApp() {
 
   const isAdmin = auth?.profile?.role === "admin";
   const token = auth?.session?.access_token;
+  const userId = auth?.session?.user?.id;
   const userName = auth?.session?.user?.email?.split("@")[0] || "Usuario";
 
   const showToast = (msg, type = "ok") => { setToast({ msg, type }); setTimeout(() => setToast(null), 3000); };
@@ -271,6 +274,14 @@ export default function StockApp() {
     } catch { showToast("Error conectando con la base de datos", "err"); }
   }, [token]);
 
+  const loadWithdrawals = useCallback(async () => {
+    if (!token) return;
+    try {
+      const data = await sb("withdrawals?select=*&order=created_at.desc", {}, token);
+      setWithdrawals(data || []);
+    } catch { showToast("Error cargando planillas", "err"); }
+  }, [token]);
+
   const loadUsers = useCallback(async () => {
     if (!token || !isAdmin) return;
     try {
@@ -279,7 +290,13 @@ export default function StockApp() {
     } catch { showToast("Error cargando usuarios", "err"); }
   }, [token, isAdmin]);
 
-  useEffect(() => { if (token) { loadAll(); if (isAdmin) loadUsers(); } }, [loadAll, loadUsers]);
+  useEffect(() => {
+    if (token) {
+      loadAll();
+      loadWithdrawals();
+      if (isAdmin) loadUsers();
+    }
+  }, [loadAll, loadWithdrawals, loadUsers]);
 
   useEffect(() => {
     if (modalType === "product" && scannedCodeRef.current && !editProduct) {
@@ -347,7 +364,28 @@ export default function StockApp() {
     } catch { showToast("Error al registrar", "err"); } finally { setSaving(false); }
   };
 
-  // ── Confirmar retiro en lote ──
+  // ── Escaneo desde planilla de retiro ──
+  const handleWithdrawalScan = (code) => {
+    const cleanCode = code.trim();
+    const found = products.find(p => p.barcode === cleanCode);
+    setModalType(null);
+    if (found) {
+      setTimeout(() => {
+        const existing = withdrawalList.find(x => x.id === found.id);
+        if (existing) {
+          setWithdrawalList(prev => prev.map(x => x.id === found.id ? { ...x, qty: x.qty + 1 } : x));
+          showToast(`+1 unidad de ${found.name}`);
+        } else {
+          setWithdrawalList(prev => [...prev, { id: found.id, name: found.name, barcode: found.barcode, qty: 1 }]);
+          showToast(`${found.name} agregado a la planilla`);
+        }
+      }, 300);
+    } else {
+      showToast(`Código no encontrado: ${cleanCode}`, "err");
+    }
+  };
+
+  // ── Confirmar retiro en lote y guardar planilla ──
   const confirmWithdrawal = async () => {
     if (!withdrawalReason.trim()) return showToast("Ingresá el motivo del retiro", "err");
     if (withdrawalList.length === 0) return showToast("La planilla está vacía", "err");
@@ -357,23 +395,35 @@ export default function StockApp() {
     }
     setSaving(true);
     try {
+      // Descontar stock y registrar movimientos
       for (const item of withdrawalList) {
         const prod = products.find(p => p.id === item.id);
         const newStock = prod.stock - item.qty;
         await sb(`products?id=eq.${item.id}`, { method: "PATCH", body: JSON.stringify({ stock: newStock }) }, token);
         await sb("movements", { method: "POST", body: JSON.stringify({ product_id: item.id, product_name: item.name, type: "salida", qty: item.qty, reason: withdrawalReason, user: userName }) }, token);
       }
+      // Guardar la planilla completa en withdrawals
+      await sb("withdrawals", {
+        method: "POST",
+        body: JSON.stringify({
+          user_id: userId,
+          user_name: userName,
+          reason: withdrawalReason,
+          items: withdrawalList,
+        }),
+      }, token);
+
       showToast(`Retiro confirmado: ${withdrawalList.length} producto(s) ✓`);
       setWithdrawalList([]);
       setWithdrawalReason("");
       setWithdrawalProduct(null);
       setWithdrawalQty(1);
       await loadAll();
+      await loadWithdrawals();
     } catch { showToast("Error al procesar el retiro", "err"); }
     finally { setSaving(false); }
   };
 
-  // ── Bug fix: llaves corregidas ──
   const handleScanDetected = (code) => {
     const cleanCode = code.trim();
     const found = products.find(p => p.barcode === cleanCode);
@@ -432,7 +482,6 @@ export default function StockApp() {
     tabBar: { display: "flex", background: "#12141c", borderTop: "1px solid #1e2130", position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 50 },
   };
 
-  // ── Tab "Retiro" visible para todos ──
   const tabs = [
     ["dashboard", "📊", "Dashboard"],
     ["products", "📦", "Productos"],
@@ -582,9 +631,19 @@ export default function StockApp() {
           <div>
             <h2 style={{ fontSize: 19, fontWeight: 700, marginBottom: 18 }}>📋 Planilla de retiro</h2>
 
-            {/* Selector de producto */}
+            {/* Selector de producto + escaneo */}
             <div style={{ ...S.card, padding: 16, marginBottom: 14 }}>
               <div style={{ fontSize: 13, fontWeight: 600, color: "#5b8def", marginBottom: 12 }}>Agregar producto a la planilla</div>
+
+              {/* Botón escanear para planilla */}
+              <button
+                style={{ ...S.btnPrimary, width: "100%", marginBottom: 12, padding: 11, fontSize: 14 }}
+                onClick={() => setModalType("withdrawal-scanner")}>
+                📷 Escanear código de barras
+              </button>
+
+              <div style={{ fontSize: 11, color: "#8b90a8", textAlign: "center", marginBottom: 12 }}>— o seleccioná manualmente —</div>
+
               <div style={{ marginBottom: 10 }}>
                 <label style={{ fontSize: 12, color: "#8b90a8", fontWeight: 500, display: "block", marginBottom: 5 }}>Producto</label>
                 <select style={S.input} value={withdrawalProduct?.id || ""} onChange={e => {
@@ -604,7 +663,7 @@ export default function StockApp() {
                   value={withdrawalQty}
                   onChange={e => setWithdrawalQty(Number(e.target.value))} />
               </div>
-              <button style={S.btnPrimary} onClick={() => {
+              <button style={S.btnGhost} onClick={() => {
                 if (!withdrawalProduct) return showToast("Seleccioná un producto", "err");
                 if (withdrawalQty <= 0) return showToast("Cantidad inválida", "err");
                 if (withdrawalQty > withdrawalProduct.stock) return showToast("Stock insuficiente", "err");
@@ -641,7 +700,17 @@ export default function StockApp() {
                     {item.barcode && <div style={{ fontSize: 11, color: "#8b90a8", fontFamily: "monospace" }}>{item.barcode}</div>}
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <span style={{ fontFamily: "monospace", fontWeight: 700, color: "#f06b7a", fontSize: 15 }}>−{item.qty}</span>
+                    {/* Editar cantidad inline */}
+                    <input
+                      type="number"
+                      min="1"
+                      value={item.qty}
+                      onChange={e => setWithdrawalList(withdrawalList.map(x =>
+                        x.id === item.id ? { ...x, qty: Number(e.target.value) } : x
+                      ))}
+                      style={{ width: 54, background: "#1e2130", border: "1px solid #252839", borderRadius: 7, padding: "5px 8px", color: "#f06b7a", fontFamily: "monospace", fontWeight: 700, fontSize: 14, textAlign: "center", outline: "none" }}
+                    />
+                    <span style={{ fontSize: 11, color: "#8b90a8" }}>uds</span>
                     <button style={S.btnDanger} onClick={() => setWithdrawalList(withdrawalList.filter(x => x.id !== item.id))}>🗑️</button>
                   </div>
                 </div>
@@ -664,6 +733,45 @@ export default function StockApp() {
                   disabled={saving}>
                   {saving ? "Procesando..." : `✅ Confirmar retiro de ${withdrawalList.length} producto(s)`}
                 </button>
+              </div>
+            )}
+
+            {/* ── Historial de planillas (solo admin) ── */}
+            {isAdmin && (
+              <div style={{ ...S.card, marginTop: 24 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, padding: "12px 16px", borderBottom: "1px solid #1e2130", color: "#5b8def" }}>
+                  🗂️ Planillas confirmadas ({withdrawals.length})
+                </div>
+                {withdrawals.length === 0 && (
+                  <div style={{ padding: 24, textAlign: "center", color: "#8b90a8", fontSize: 13 }}>Sin planillas aún</div>
+                )}
+                {withdrawals.map(w => (
+                  <div key={w.id} style={{ ...S.row, cursor: "pointer", flexDirection: "column", alignItems: "flex-start", gap: 6 }}
+                    onClick={() => setSelectedWithdrawal(selectedWithdrawal?.id === w.id ? null : w)}>
+                    <div style={{ display: "flex", justifyContent: "space-between", width: "100%" }}>
+                      <div>
+                        <div style={{ fontWeight: 600, fontSize: 13 }}>{w.reason}</div>
+                        <div style={{ fontSize: 11, color: "#8b90a8" }}>
+                          <span style={{ color: "#5b8def" }}>{w.user_name}</span> · {formatDate(w.created_at)}
+                        </div>
+                      </div>
+                      <span style={{ fontSize: 12, color: "#8b90a8", alignSelf: "center" }}>
+                        {w.items?.length || 0} prod. {selectedWithdrawal?.id === w.id ? "▲" : "▼"}
+                      </span>
+                    </div>
+                    {/* Detalle expandible */}
+                    {selectedWithdrawal?.id === w.id && (
+                      <div style={{ width: "100%", background: "#12141c", borderRadius: 8, padding: "10px 12px", marginTop: 4 }}>
+                        {w.items?.map((item, i) => (
+                          <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", borderBottom: "1px solid #1e2130", fontSize: 12 }}>
+                            <span>{item.name}</span>
+                            <span style={{ fontFamily: "monospace", color: "#f06b7a", fontWeight: 700 }}>−{item.qty} uds</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
               </div>
             )}
           </div>
@@ -734,7 +842,7 @@ export default function StockApp() {
         </button>
       </div>
 
-      {/* ── MODAL SCANNER ── */}
+      {/* ── MODAL SCANNER GENERAL ── */}
       {modalType === "scanner" && (
         <div style={S.modalOverlay} onClick={e => e.target === e.currentTarget && setModalType(null)}>
           <div style={S.modal}>
@@ -743,6 +851,20 @@ export default function StockApp() {
               <button style={S.btnGhost} onClick={() => setModalType(null)}>✕</button>
             </div>
             <BarcodeScanner onDetected={handleScanDetected} />
+          </div>
+        </div>
+      )}
+
+      {/* ── MODAL SCANNER PLANILLA ── */}
+      {modalType === "withdrawal-scanner" && (
+        <div style={S.modalOverlay} onClick={e => e.target === e.currentTarget && setModalType(null)}>
+          <div style={S.modal}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <div style={{ fontSize: 16, fontWeight: 700 }}>📷 Escanear para retiro</div>
+              <button style={S.btnGhost} onClick={() => setModalType(null)}>✕</button>
+            </div>
+            <div style={{ fontSize: 12, color: "#8b90a8", marginBottom: 16 }}>Cada escaneo agrega 1 unidad del producto a la planilla.</div>
+            <BarcodeScanner onDetected={handleWithdrawalScan} />
           </div>
         </div>
       )}
