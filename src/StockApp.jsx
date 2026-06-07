@@ -260,7 +260,7 @@ export default function StockApp() {
   const userId = auth?.session?.user?.id;
   const userName = auth?.session?.user?.email?.split("@")[0] || "Usuario";
 
-  const showToast = (msg, type = "ok") => { setToast({ msg, type }); setTimeout(() => setToast(null), 3000); };
+  const showToast = (msg, type = "ok") => { setToast({ msg, type }); setTimeout(() => setToast(null), 3500); };
 
   const loadAll = useCallback(async () => {
     if (!token) return;
@@ -291,11 +291,7 @@ export default function StockApp() {
   }, [token, isAdmin]);
 
   useEffect(() => {
-    if (token) {
-      loadAll();
-      loadWithdrawals();
-      if (isAdmin) loadUsers();
-    }
+    if (token) { loadAll(); loadWithdrawals(); if (isAdmin) loadUsers(); }
   }, [loadAll, loadWithdrawals, loadUsers]);
 
   useEffect(() => {
@@ -364,7 +360,7 @@ export default function StockApp() {
     } catch { showToast("Error al registrar", "err"); } finally { setSaving(false); }
   };
 
-  // ── Escaneo desde planilla de retiro ──
+  // ── Escaneo desde planilla ──
   const handleWithdrawalScan = (code) => {
     const cleanCode = code.trim();
     const found = products.find(p => p.barcode === cleanCode);
@@ -385,7 +381,7 @@ export default function StockApp() {
     }
   };
 
-  // ── Confirmar retiro en lote y guardar planilla ──
+  // ── Confirmar retiro en lote ──
   const confirmWithdrawal = async () => {
     if (!withdrawalReason.trim()) return showToast("Ingresá el motivo del retiro", "err");
     if (withdrawalList.length === 0) return showToast("La planilla está vacía", "err");
@@ -395,24 +391,16 @@ export default function StockApp() {
     }
     setSaving(true);
     try {
-      // Descontar stock y registrar movimientos
       for (const item of withdrawalList) {
         const prod = products.find(p => p.id === item.id);
         const newStock = prod.stock - item.qty;
         await sb(`products?id=eq.${item.id}`, { method: "PATCH", body: JSON.stringify({ stock: newStock }) }, token);
         await sb("movements", { method: "POST", body: JSON.stringify({ product_id: item.id, product_name: item.name, type: "salida", qty: item.qty, reason: withdrawalReason, user: userName }) }, token);
       }
-      // Guardar la planilla completa en withdrawals
       await sb("withdrawals", {
         method: "POST",
-        body: JSON.stringify({
-          user_id: userId,
-          user_name: userName,
-          reason: withdrawalReason,
-          items: withdrawalList,
-        }),
+        body: JSON.stringify({ user_id: userId, user_name: userName, reason: withdrawalReason, items: withdrawalList, anulada: false }),
       }, token);
-
       showToast(`Retiro confirmado: ${withdrawalList.length} producto(s) ✓`);
       setWithdrawalList([]);
       setWithdrawalReason("");
@@ -421,6 +409,38 @@ export default function StockApp() {
       await loadAll();
       await loadWithdrawals();
     } catch { showToast("Error al procesar el retiro", "err"); }
+    finally { setSaving(false); }
+  };
+
+  // ── Anular planilla (solo admin) ──
+  const anularWithdrawal = async (w) => {
+    if (!confirm(`¿Anular el retiro "${w.reason}" de ${w.user_name}? Esto devolverá el stock de todos los productos.`)) return;
+    setSaving(true);
+    try {
+      // Devolver stock de cada producto
+      for (const item of w.items) {
+        const prod = products.find(p => p.id === item.id);
+        const newStock = (prod?.stock || 0) + item.qty;
+        await sb(`products?id=eq.${item.id}`, { method: "PATCH", body: JSON.stringify({ stock: newStock }) }, token);
+        await sb("movements", {
+          method: "POST",
+          body: JSON.stringify({
+            product_id: item.id,
+            product_name: item.name,
+            type: "entrada",
+            qty: item.qty,
+            reason: `Anulación de retiro: ${w.reason}`,
+            user: userName,
+          }),
+        }, token);
+      }
+      // Marcar planilla como anulada
+      await sb(`withdrawals?id=eq.${w.id}`, { method: "PATCH", body: JSON.stringify({ anulada: true }) }, token);
+      showToast("Retiro anulado y stock restaurado ✓");
+      setSelectedWithdrawal(null);
+      await loadAll();
+      await loadWithdrawals();
+    } catch { showToast("Error al anular el retiro", "err"); }
     finally { setSaving(false); }
   };
 
@@ -475,6 +495,7 @@ export default function StockApp() {
     btnPrimary: { background: "#5b8def", color: "#fff", border: "none", borderRadius: 9, padding: "8px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer" },
     btnGhost: { background: "#1e2130", color: "#8b90a8", border: "1px solid #252839", borderRadius: 9, padding: "7px 12px", fontSize: 13, cursor: "pointer" },
     btnDanger: { background: "#3d1f26", color: "#f06b7a", border: "1px solid #5c2d38", borderRadius: 9, padding: "7px 10px", fontSize: 13, cursor: "pointer" },
+    btnWarning: { background: "#3d2f10", color: "#f0c06b", border: "1px solid #5c4518", borderRadius: 9, padding: "7px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer" },
     input: { background: "#1e2130", border: "1px solid #252839", borderRadius: 9, padding: "10px 14px", color: "#e8eaf0", fontSize: 14, width: "100%", outline: "none", boxSizing: "border-box" },
     modalOverlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, backdropFilter: "blur(4px)", padding: 16 },
     modal: { background: "#161921", border: "1px solid #252839", borderRadius: 16, padding: 24, width: "100%", maxWidth: 480, maxHeight: "92vh", overflowY: "auto" },
@@ -631,19 +652,14 @@ export default function StockApp() {
           <div>
             <h2 style={{ fontSize: 19, fontWeight: 700, marginBottom: 18 }}>📋 Planilla de retiro</h2>
 
-            {/* Selector de producto + escaneo */}
             <div style={{ ...S.card, padding: 16, marginBottom: 14 }}>
               <div style={{ fontSize: 13, fontWeight: 600, color: "#5b8def", marginBottom: 12 }}>Agregar producto a la planilla</div>
-
-              {/* Botón escanear para planilla */}
               <button
                 style={{ ...S.btnPrimary, width: "100%", marginBottom: 12, padding: 11, fontSize: 14 }}
                 onClick={() => setModalType("withdrawal-scanner")}>
                 📷 Escanear código de barras
               </button>
-
               <div style={{ fontSize: 11, color: "#8b90a8", textAlign: "center", marginBottom: 12 }}>— o seleccioná manualmente —</div>
-
               <div style={{ marginBottom: 10 }}>
                 <label style={{ fontSize: 12, color: "#8b90a8", fontWeight: 500, display: "block", marginBottom: 5 }}>Producto</label>
                 <select style={S.input} value={withdrawalProduct?.id || ""} onChange={e => {
@@ -659,9 +675,7 @@ export default function StockApp() {
               </div>
               <div style={{ marginBottom: 12 }}>
                 <label style={{ fontSize: 12, color: "#8b90a8", fontWeight: 500, display: "block", marginBottom: 5 }}>Cantidad</label>
-                <input style={S.input} type="number" min="1"
-                  value={withdrawalQty}
-                  onChange={e => setWithdrawalQty(Number(e.target.value))} />
+                <input style={S.input} type="number" min="1" value={withdrawalQty} onChange={e => setWithdrawalQty(Number(e.target.value))} />
               </div>
               <button style={S.btnGhost} onClick={() => {
                 if (!withdrawalProduct) return showToast("Seleccioná un producto", "err");
@@ -669,23 +683,15 @@ export default function StockApp() {
                 if (withdrawalQty > withdrawalProduct.stock) return showToast("Stock insuficiente", "err");
                 const existing = withdrawalList.find(x => x.id === withdrawalProduct.id);
                 if (existing) {
-                  setWithdrawalList(withdrawalList.map(x =>
-                    x.id === withdrawalProduct.id ? { ...x, qty: x.qty + withdrawalQty } : x
-                  ));
+                  setWithdrawalList(withdrawalList.map(x => x.id === withdrawalProduct.id ? { ...x, qty: x.qty + withdrawalQty } : x));
                 } else {
-                  setWithdrawalList([...withdrawalList, {
-                    id: withdrawalProduct.id,
-                    name: withdrawalProduct.name,
-                    barcode: withdrawalProduct.barcode,
-                    qty: withdrawalQty,
-                  }]);
+                  setWithdrawalList([...withdrawalList, { id: withdrawalProduct.id, name: withdrawalProduct.name, barcode: withdrawalProduct.barcode, qty: withdrawalQty }]);
                 }
                 setWithdrawalProduct(null);
                 setWithdrawalQty(1);
               }}>+ Agregar a planilla</button>
             </div>
 
-            {/* Tabla con los productos agregados */}
             <div style={{ ...S.card, marginBottom: 14 }}>
               <div style={{ fontSize: 13, fontWeight: 600, padding: "12px 16px", borderBottom: "1px solid #1e2130" }}>
                 Productos a retirar ({withdrawalList.length})
@@ -700,14 +706,9 @@ export default function StockApp() {
                     {item.barcode && <div style={{ fontSize: 11, color: "#8b90a8", fontFamily: "monospace" }}>{item.barcode}</div>}
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    {/* Editar cantidad inline */}
                     <input
-                      type="number"
-                      min="1"
-                      value={item.qty}
-                      onChange={e => setWithdrawalList(withdrawalList.map(x =>
-                        x.id === item.id ? { ...x, qty: Number(e.target.value) } : x
-                      ))}
+                      type="number" min="1" value={item.qty}
+                      onChange={e => setWithdrawalList(withdrawalList.map(x => x.id === item.id ? { ...x, qty: Number(e.target.value) } : x))}
                       style={{ width: 54, background: "#1e2130", border: "1px solid #252839", borderRadius: 7, padding: "5px 8px", color: "#f06b7a", fontFamily: "monospace", fontWeight: 700, fontSize: 14, textAlign: "center", outline: "none" }}
                     />
                     <span style={{ fontSize: 11, color: "#8b90a8" }}>uds</span>
@@ -717,26 +718,21 @@ export default function StockApp() {
               ))}
             </div>
 
-            {/* Motivo y botón confirmar */}
             {withdrawalList.length > 0 && (
               <div style={{ ...S.card, padding: 16 }}>
                 <div style={{ marginBottom: 12 }}>
                   <label style={{ fontSize: 12, color: "#8b90a8", fontWeight: 500, display: "block", marginBottom: 5 }}>Motivo del retiro *</label>
-                  <input style={S.input} type="text"
-                    placeholder="Ej: Entrega a cliente, uso interno..."
-                    value={withdrawalReason}
-                    onChange={e => setWithdrawalReason(e.target.value)} />
+                  <input style={S.input} type="text" placeholder="Ej: Entrega a cliente, uso interno..."
+                    value={withdrawalReason} onChange={e => setWithdrawalReason(e.target.value)} />
                 </div>
-                <button
-                  style={{ ...S.btnPrimary, width: "100%", padding: 13, fontSize: 15, opacity: saving ? 0.6 : 1 }}
-                  onClick={confirmWithdrawal}
-                  disabled={saving}>
+                <button style={{ ...S.btnPrimary, width: "100%", padding: 13, fontSize: 15, opacity: saving ? 0.6 : 1 }}
+                  onClick={confirmWithdrawal} disabled={saving}>
                   {saving ? "Procesando..." : `✅ Confirmar retiro de ${withdrawalList.length} producto(s)`}
                 </button>
               </div>
             )}
 
-            {/* ── Historial de planillas (solo admin) ── */}
+            {/* ── Historial de planillas (admin) ── */}
             {isAdmin && (
               <div style={{ ...S.card, marginTop: 24 }}>
                 <div style={{ fontSize: 13, fontWeight: 600, padding: "12px 16px", borderBottom: "1px solid #1e2130", color: "#5b8def" }}>
@@ -746,28 +742,45 @@ export default function StockApp() {
                   <div style={{ padding: 24, textAlign: "center", color: "#8b90a8", fontSize: 13 }}>Sin planillas aún</div>
                 )}
                 {withdrawals.map(w => (
-                  <div key={w.id} style={{ ...S.row, cursor: "pointer", flexDirection: "column", alignItems: "flex-start", gap: 6 }}
-                    onClick={() => setSelectedWithdrawal(selectedWithdrawal?.id === w.id ? null : w)}>
-                    <div style={{ display: "flex", justifyContent: "space-between", width: "100%" }}>
-                      <div>
-                        <div style={{ fontWeight: 600, fontSize: 13 }}>{w.reason}</div>
+                  <div key={w.id} style={{ borderBottom: "1px solid #1a1d27" }}>
+                    {/* Cabecera de la planilla */}
+                    <div
+                      style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", cursor: "pointer", opacity: w.anulada ? 0.5 : 1 }}
+                      onClick={() => setSelectedWithdrawal(selectedWithdrawal?.id === w.id ? null : w)}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <span style={{ fontWeight: 600, fontSize: 13 }}>{w.reason}</span>
+                          {w.anulada && (
+                            <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 20, background: "#2a2010", color: "#f0c06b", border: "1px solid #5c4518" }}>ANULADA</span>
+                          )}
+                        </div>
                         <div style={{ fontSize: 11, color: "#8b90a8" }}>
                           <span style={{ color: "#5b8def" }}>{w.user_name}</span> · {formatDate(w.created_at)}
                         </div>
                       </div>
-                      <span style={{ fontSize: 12, color: "#8b90a8", alignSelf: "center" }}>
-                        {w.items?.length || 0} prod. {selectedWithdrawal?.id === w.id ? "▲" : "▼"}
-                      </span>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+                        <span style={{ fontSize: 12, color: "#8b90a8" }}>{w.items?.length || 0} prod. {selectedWithdrawal?.id === w.id ? "▲" : "▼"}</span>
+                      </div>
                     </div>
+
                     {/* Detalle expandible */}
                     {selectedWithdrawal?.id === w.id && (
-                      <div style={{ width: "100%", background: "#12141c", borderRadius: 8, padding: "10px 12px", marginTop: 4 }}>
+                      <div style={{ background: "#12141c", padding: "10px 16px 14px" }}>
                         {w.items?.map((item, i) => (
                           <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", borderBottom: "1px solid #1e2130", fontSize: 12 }}>
                             <span>{item.name}</span>
                             <span style={{ fontFamily: "monospace", color: "#f06b7a", fontWeight: 700 }}>−{item.qty} uds</span>
                           </div>
                         ))}
+                        {/* Botón anular — solo si no está ya anulada */}
+                        {!w.anulada && (
+                          <button
+                            style={{ ...S.btnWarning, marginTop: 14, width: "100%", padding: 10, fontSize: 13, opacity: saving ? 0.6 : 1 }}
+                            onClick={() => anularWithdrawal(w)}
+                            disabled={saving}>
+                            ↩ Anular retiro y restaurar stock
+                          </button>
+                        )}
                       </div>
                     )}
                   </div>
@@ -863,7 +876,7 @@ export default function StockApp() {
               <div style={{ fontSize: 16, fontWeight: 700 }}>📷 Escanear para retiro</div>
               <button style={S.btnGhost} onClick={() => setModalType(null)}>✕</button>
             </div>
-            <div style={{ fontSize: 12, color: "#8b90a8", marginBottom: 16 }}>Cada escaneo agrega 1 unidad del producto a la planilla.</div>
+            <div style={{ fontSize: 12, color: "#8b90a8", marginBottom: 16 }}>Cada escaneo agrega 1 unidad a la planilla.</div>
             <BarcodeScanner onDetected={handleWithdrawalScan} />
           </div>
         </div>
@@ -887,13 +900,8 @@ export default function StockApp() {
             ].map(f => (
               <div key={f.key} style={{ marginBottom: 12 }}>
                 <label style={{ fontSize: 12, color: "#8b90a8", fontWeight: 500, display: "block", marginBottom: 5 }}>{f.label}</label>
-                <input
-                  style={S.input}
-                  type={f.type}
-                  placeholder={f.ph}
-                  value={form[f.key]}
-                  onChange={e => setForm(p => ({ ...p, [f.key]: e.target.value }))}
-                />
+                <input style={S.input} type={f.type} placeholder={f.ph} value={form[f.key]}
+                  onChange={e => setForm(p => ({ ...p, [f.key]: e.target.value }))} />
               </div>
             ))}
             <div style={{ marginBottom: 18 }}>
