@@ -247,6 +247,12 @@ export default function StockApp() {
   const [creatingUser, setCreatingUser] = useState(false);
   const scannedCodeRef = useRef("");
 
+  // ── Estado planilla de retiro ──
+  const [withdrawalList, setWithdrawalList] = useState([]);
+  const [withdrawalReason, setWithdrawalReason] = useState("");
+  const [withdrawalProduct, setWithdrawalProduct] = useState(null);
+  const [withdrawalQty, setWithdrawalQty] = useState(1);
+
   const isAdmin = auth?.profile?.role === "admin";
   const token = auth?.session?.access_token;
   const userName = auth?.session?.user?.email?.split("@")[0] || "Usuario";
@@ -275,7 +281,6 @@ export default function StockApp() {
 
   useEffect(() => { if (token) { loadAll(); if (isAdmin) loadUsers(); } }, [loadAll, loadUsers]);
 
-  // Cuando se abre el modal de producto y hay un código escaneado, cargarlo
   useEffect(() => {
     if (modalType === "product" && scannedCodeRef.current && !editProduct) {
       setForm(f => ({ ...f, barcode: scannedCodeRef.current }));
@@ -342,6 +347,33 @@ export default function StockApp() {
     } catch { showToast("Error al registrar", "err"); } finally { setSaving(false); }
   };
 
+  // ── Confirmar retiro en lote ──
+  const confirmWithdrawal = async () => {
+    if (!withdrawalReason.trim()) return showToast("Ingresá el motivo del retiro", "err");
+    if (withdrawalList.length === 0) return showToast("La planilla está vacía", "err");
+    for (const item of withdrawalList) {
+      const prod = products.find(p => p.id === item.id);
+      if (!prod || prod.stock < item.qty) return showToast(`Stock insuficiente para: ${item.name}`, "err");
+    }
+    setSaving(true);
+    try {
+      for (const item of withdrawalList) {
+        const prod = products.find(p => p.id === item.id);
+        const newStock = prod.stock - item.qty;
+        await sb(`products?id=eq.${item.id}`, { method: "PATCH", body: JSON.stringify({ stock: newStock }) }, token);
+        await sb("movements", { method: "POST", body: JSON.stringify({ product_id: item.id, product_name: item.name, type: "salida", qty: item.qty, reason: withdrawalReason, user: userName }) }, token);
+      }
+      showToast(`Retiro confirmado: ${withdrawalList.length} producto(s) ✓`);
+      setWithdrawalList([]);
+      setWithdrawalReason("");
+      setWithdrawalProduct(null);
+      setWithdrawalQty(1);
+      await loadAll();
+    } catch { showToast("Error al procesar el retiro", "err"); }
+    finally { setSaving(false); }
+  };
+
+  // ── Bug fix: llaves corregidas ──
   const handleScanDetected = (code) => {
     const cleanCode = code.trim();
     const found = products.find(p => p.barcode === cleanCode);
@@ -354,7 +386,9 @@ export default function StockApp() {
         setEditProduct(null);
         setForm({ name: "", barcode: cleanCode, category: "Otro", description: "", stock: 0, min_stock: 5, price: 0 });
         setTimeout(() => setModalType("product"), 300);
-      else { showToast(`Leído: ${cleanCode}`, "err");
+      } else {
+        showToast(`Código no encontrado: ${cleanCode}`, "err");
+      }
     }
   };
 
@@ -398,8 +432,14 @@ export default function StockApp() {
     tabBar: { display: "flex", background: "#12141c", borderTop: "1px solid #1e2130", position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 50 },
   };
 
-  const tabs = [["dashboard","📊","Dashboard"],["products","📦","Productos"],["movements","🔄","Historial"],
-    ...(isAdmin ? [["users","👥","Usuarios"]] : [])];
+  // ── Tab "Retiro" visible para todos ──
+  const tabs = [
+    ["dashboard", "📊", "Dashboard"],
+    ["products", "📦", "Productos"],
+    ["movements", "🔄", "Historial"],
+    ["withdrawal", "📋", "Retiro"],
+    ...(isAdmin ? [["users", "👥", "Usuarios"]] : []),
+  ];
 
   return (
     <div style={S.page}>
@@ -421,6 +461,7 @@ export default function StockApp() {
 
       <div style={{ padding: "18px 14px 90px", maxWidth: 1000, margin: "0 auto" }}>
 
+        {/* ── DASHBOARD ── */}
         {view === "dashboard" && (
           <div>
             <h2 style={{ fontSize: 19, fontWeight: 700, marginBottom: 18 }}>Dashboard</h2>
@@ -472,6 +513,7 @@ export default function StockApp() {
           </div>
         )}
 
+        {/* ── PRODUCTOS ── */}
         {view === "products" && (
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
@@ -512,6 +554,7 @@ export default function StockApp() {
           </div>
         )}
 
+        {/* ── HISTORIAL ── */}
         {view === "movements" && (
           <div>
             <h2 style={{ fontSize: 19, fontWeight: 700, marginBottom: 14 }}>Historial</h2>
@@ -534,6 +577,99 @@ export default function StockApp() {
           </div>
         )}
 
+        {/* ── PLANILLA DE RETIRO ── */}
+        {view === "withdrawal" && (
+          <div>
+            <h2 style={{ fontSize: 19, fontWeight: 700, marginBottom: 18 }}>📋 Planilla de retiro</h2>
+
+            {/* Selector de producto */}
+            <div style={{ ...S.card, padding: 16, marginBottom: 14 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "#5b8def", marginBottom: 12 }}>Agregar producto a la planilla</div>
+              <div style={{ marginBottom: 10 }}>
+                <label style={{ fontSize: 12, color: "#8b90a8", fontWeight: 500, display: "block", marginBottom: 5 }}>Producto</label>
+                <select style={S.input} value={withdrawalProduct?.id || ""} onChange={e => {
+                  const p = products.find(x => x.id === e.target.value);
+                  setWithdrawalProduct(p || null);
+                  setWithdrawalQty(1);
+                }}>
+                  <option value="">— Seleccioná un producto —</option>
+                  {products.map(p => (
+                    <option key={p.id} value={p.id}>{p.name} (stock: {p.stock})</option>
+                  ))}
+                </select>
+              </div>
+              <div style={{ marginBottom: 12 }}>
+                <label style={{ fontSize: 12, color: "#8b90a8", fontWeight: 500, display: "block", marginBottom: 5 }}>Cantidad</label>
+                <input style={S.input} type="number" min="1"
+                  value={withdrawalQty}
+                  onChange={e => setWithdrawalQty(Number(e.target.value))} />
+              </div>
+              <button style={S.btnPrimary} onClick={() => {
+                if (!withdrawalProduct) return showToast("Seleccioná un producto", "err");
+                if (withdrawalQty <= 0) return showToast("Cantidad inválida", "err");
+                if (withdrawalQty > withdrawalProduct.stock) return showToast("Stock insuficiente", "err");
+                const existing = withdrawalList.find(x => x.id === withdrawalProduct.id);
+                if (existing) {
+                  setWithdrawalList(withdrawalList.map(x =>
+                    x.id === withdrawalProduct.id ? { ...x, qty: x.qty + withdrawalQty } : x
+                  ));
+                } else {
+                  setWithdrawalList([...withdrawalList, {
+                    id: withdrawalProduct.id,
+                    name: withdrawalProduct.name,
+                    barcode: withdrawalProduct.barcode,
+                    qty: withdrawalQty,
+                  }]);
+                }
+                setWithdrawalProduct(null);
+                setWithdrawalQty(1);
+              }}>+ Agregar a planilla</button>
+            </div>
+
+            {/* Tabla con los productos agregados */}
+            <div style={{ ...S.card, marginBottom: 14 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, padding: "12px 16px", borderBottom: "1px solid #1e2130" }}>
+                Productos a retirar ({withdrawalList.length})
+              </div>
+              {withdrawalList.length === 0 && (
+                <div style={{ padding: 24, textAlign: "center", color: "#8b90a8", fontSize: 13 }}>La planilla está vacía</div>
+              )}
+              {withdrawalList.map(item => (
+                <div key={item.id} style={S.row}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 600, fontSize: 13 }}>{item.name}</div>
+                    {item.barcode && <div style={{ fontSize: 11, color: "#8b90a8", fontFamily: "monospace" }}>{item.barcode}</div>}
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <span style={{ fontFamily: "monospace", fontWeight: 700, color: "#f06b7a", fontSize: 15 }}>−{item.qty}</span>
+                    <button style={S.btnDanger} onClick={() => setWithdrawalList(withdrawalList.filter(x => x.id !== item.id))}>🗑️</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Motivo y botón confirmar */}
+            {withdrawalList.length > 0 && (
+              <div style={{ ...S.card, padding: 16 }}>
+                <div style={{ marginBottom: 12 }}>
+                  <label style={{ fontSize: 12, color: "#8b90a8", fontWeight: 500, display: "block", marginBottom: 5 }}>Motivo del retiro *</label>
+                  <input style={S.input} type="text"
+                    placeholder="Ej: Entrega a cliente, uso interno..."
+                    value={withdrawalReason}
+                    onChange={e => setWithdrawalReason(e.target.value)} />
+                </div>
+                <button
+                  style={{ ...S.btnPrimary, width: "100%", padding: 13, fontSize: 15, opacity: saving ? 0.6 : 1 }}
+                  onClick={confirmWithdrawal}
+                  disabled={saving}>
+                  {saving ? "Procesando..." : `✅ Confirmar retiro de ${withdrawalList.length} producto(s)`}
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── USUARIOS ── */}
         {view === "users" && isAdmin && (
           <div>
             <h2 style={{ fontSize: 19, fontWeight: 700, marginBottom: 18 }}>Gestión de usuarios</h2>
@@ -586,6 +722,7 @@ export default function StockApp() {
         )}
       </div>
 
+      {/* ── TAB BAR ── */}
       <div style={S.tabBar}>
         {tabs.map(([v, icon, label]) => (
           <button key={v} onClick={() => setView(v)} style={{ flex: 1, background: "none", border: "none", cursor: "pointer", padding: "10px 4px 8px", display: "flex", flexDirection: "column", alignItems: "center", gap: 3, color: view === v ? "#5b8def" : "#8b90a8", fontSize: 10, fontWeight: 500 }}>
@@ -597,6 +734,7 @@ export default function StockApp() {
         </button>
       </div>
 
+      {/* ── MODAL SCANNER ── */}
       {modalType === "scanner" && (
         <div style={S.modalOverlay} onClick={e => e.target === e.currentTarget && setModalType(null)}>
           <div style={S.modal}>
@@ -609,6 +747,7 @@ export default function StockApp() {
         </div>
       )}
 
+      {/* ── MODAL PRODUCTO ── */}
       {modalType === "product" && isAdmin && (
         <div style={S.modalOverlay} onClick={e => e.target === e.currentTarget && setModalType(null)}>
           <div style={S.modal}>
@@ -651,6 +790,7 @@ export default function StockApp() {
         </div>
       )}
 
+      {/* ── MODAL MOVIMIENTO ── */}
       {modalType === "movement" && movProduct && (
         <div style={S.modalOverlay} onClick={e => e.target === e.currentTarget && setModalType(null)}>
           <div style={S.modal}>
@@ -682,6 +822,7 @@ export default function StockApp() {
         </div>
       )}
 
+      {/* ── TOAST ── */}
       {toast && (
         <div style={{ position: "fixed", bottom: 80, left: 16, right: 16, maxWidth: 360, margin: "0 auto", background: "#1e2130", border: `1px solid ${toast.type==="err"?"#5c2d38":"#1a3a28"}`, borderRadius: 12, padding: "13px 20px", fontSize: 14, fontWeight: 500, zIndex: 999, textAlign: "center", color: toast.type==="err"?"#f06b7a":"#4ade80" }}>
           {toast.type === "err" ? "❌" : "✅"} {toast.msg}
